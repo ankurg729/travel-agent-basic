@@ -1,0 +1,35 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+
+# Local secrets and environment overrides
+.env
+.env.*
+!.env.example
+
+# Local editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local databases and logs
+*.sqlite3
+*.db
+*.log
+
+# Docker Compose local overrides
+compose.override.yaml
+compose.override.yml
