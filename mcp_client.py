@@ -1,4 +1,4 @@
-"""Connect to the Tavily and Aviationstack MCP servers."""
+"""Connect to the Tavily, Aviationstack, and weather MCP servers."""
 
 import asyncio
 import selectors
@@ -15,6 +15,7 @@ from langchain.mcp import MCPAdapter
 
 PROJECT_DIR = Path(__file__).resolve().parent
 AVIATIONSTACK_DIR = PROJECT_DIR / "aviationstack-mcp"
+WEATHER_SERVER_SCRIPT = PROJECT_DIR / "custom-weather-mcp-server.py"
 
 # Load the keys from the project-specific env files, while preserving values
 # already supplied by the process environment.
@@ -23,6 +24,7 @@ load_dotenv(AVIATIONSTACK_DIR / ".env", override=False)
 
 search_tool = None
 aviation_tools = {}
+weather_tools = {}
 
 import asyncio
 import selectors
@@ -77,6 +79,10 @@ def create_mcp_group() -> ClientGroup:
         raise FileNotFoundError(
             f"Aviationstack MCP project was not found: {AVIATIONSTACK_DIR}"
         )
+    if not WEATHER_SERVER_SCRIPT.is_file():
+        raise FileNotFoundError(
+            f"Weather MCP server was not found: {WEATHER_SERVER_SCRIPT}"
+        )
 
     tavily_url = "https://mcp.tavily.com/mcp/?" + urlencode(
         {"tavilyApiKey": tavily_api_key}
@@ -87,20 +93,26 @@ def create_mcp_group() -> ClientGroup:
         env={"AVIATION_STACK_API_KEY": aviationstack_api_key},
         cwd=str(AVIATIONSTACK_DIR),
     )
+    weather_transport = StdioTransport(
+        command=os.sys.executable,
+        args=[str(WEATHER_SERVER_SCRIPT)],
+        cwd=str(PROJECT_DIR),
+    )
 
     return ClientGroup(
         {
             "tavily": Client(tavily_url),
             "aviationstack": Client(aviationstack_transport),
+            "weather": Client(weather_transport),
         }
     )
 
 
 async def initialize_mcp() -> None:
     """Discover tools once and expose them in the module-level registries."""
-    global search_tool, aviation_tools
+    global search_tool, aviation_tools, weather_tools
 
-    if search_tool is not None and aviation_tools:
+    if search_tool is not None and aviation_tools and weather_tools:
         return
 
     group = create_mcp_group()
@@ -119,6 +131,17 @@ async def initialize_mcp() -> None:
     aviation_tools = {
         tool.name: tool for tool in tools if tool.name.startswith("aviationstack_")
     }
+    weather_tools = {
+        tool.name: tool for tool in tools if tool.name.startswith("weather_")
+    }
+    required_weather_tools = {"weather_get_current_weather", "weather_get_forecast"}
+    missing_weather_tools = required_weather_tools - weather_tools.keys()
+    if missing_weather_tools:
+        available = ", ".join(sorted(weather_tools)) or "none"
+        raise RuntimeError(
+            "Weather tools were not found: "
+            f"{', '.join(sorted(missing_weather_tools))}. Available: {available}"
+        )
 
 
 async def tavily_mcp_search(query: str):
@@ -169,6 +192,52 @@ async def get_airlines():
 
     return result
 
+async def initialize_weather_tools():
+    """Ensure weather server tools have been discovered."""
+    await initialize_mcp()
+
+
+async def weather_mcp_search(city: str):
+
+    await initialize_weather_tools()
+
+    return await weather_tools["weather_get_current_weather"].ainvoke({"city": city})
+
+
+async def forecast_mcp_search(city: str):
+
+    await initialize_weather_tools()
+
+    return await weather_tools["weather_get_forecast"].ainvoke({"city": city})
+
+
+
+
+from langchain_groq import ChatGroq
+
+# LLM
+llm = ChatGroq(
+    model="llama-3.3-70b-versatile"
+)
+
+###################################
+# Destination Extractor
+###################################
+
+def extract_destination(query: str):
+
+    prompt = f"""
+    Extract only the destination city or country.
+
+    Query:
+    {query}
+
+    Return only destination name.
+    """
+
+    response = llm.invoke(prompt)
+
+    return response.content.strip()
 
 async def main() -> None:
     await initialize_mcp()

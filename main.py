@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import TypedDict, Annotated
 import operator
@@ -16,7 +17,7 @@ from langchain_core.messages import (
 from langchain_groq import ChatGroq
 
 # from tools.tavily_tool import tavily_search
-from mcp_client import run_mcp, tavily_mcp_search, aviation_mcp_call
+from mcp_client import extract_destination, forecast_mcp_search, run_mcp, tavily_mcp_search, aviation_mcp_call, weather_mcp_search
 
 from tools.flight_tool import search_flights
 from dotenv import load_dotenv
@@ -41,6 +42,7 @@ class TravelState(TypedDict):
     hotel_results: str
     itinerary: str
     llm_calls: int
+    weather_results: str
 
 
 # Flight Tool Router Prompt
@@ -107,6 +109,30 @@ def flight_agent(state: TravelState):
         "llm_calls": state.get("llm_calls", 0) + 1,
     }
 
+def weather_agent(state: TravelState):
+    print("\nINSIDE WEATHER AGENT\n")
+    try:
+        city = extract_destination(state["user_query"])
+        weather_data = run_mcp(weather_mcp_search(city))
+        forecast_data = run_mcp(forecast_mcp_search(city))
+        weather_results = f"""
+        Destination: {city}
+        Current Weather:
+        {weather_data}
+
+        Forecast:
+        {forecast_data}
+        """
+        
+        print(f"Weather results: {weather_results}")
+    except Exception as e:
+        weather_results = f"Weather information unavailable: {e}"
+
+    return {
+        "weather_results": weather_results,
+        "messages": [AIMessage(content="Weather information fetched")],
+    }
+
 
 # Hotel Agent
 def hotel_agent(state: TravelState):
@@ -132,6 +158,9 @@ def itinerary_agent(state: TravelState):
 
     Hotel Results:
     {state['hotel_results']}
+    
+    Weather Information:
+    {state['weather_results']}
     """
 
     response = llm.invoke(
@@ -166,14 +195,18 @@ def final_agent(state: TravelState):
     Travel Itinerary:
     {state.get('itinerary') or 'Not available'}
 
+    Weather Information:
+    {state.get('weather_results') or 'Not available'}
+
     Instructions:
     1. Generate a complete travel response.
     2. Include both flight and hotel information.
     3. Include the itinerary.
-    4. Clearly mention unavailable information.
-    5. Never invent flight availability, prices or bookings.
-    6. Use clear headings and bullet points.
-    7. Do not return an empty response.
+    4. Include current weather and forecast information when available, with the destination clearly identified.
+    5. Clearly mention unavailable information.
+    6. Never invent flight availability, prices or bookings.
+    7. Use clear headings and bullet points.
+    8. Do not return an empty response.
     """
 
     response = llm.invoke(
@@ -204,6 +237,7 @@ def final_agent(state: TravelState):
                 f"\nFlights\n{state.get('flight_results') or 'Information unavailable.'}",
                 f"\nHotels\n{state.get('hotel_results') or 'Information unavailable.'}",
                 f"\nItinerary\n{state.get('itinerary') or 'Information unavailable.'}",
+                f"\nWeather\n{state.get('weather_results') or 'Information unavailable.'}",
             ]
         )
 
@@ -217,12 +251,14 @@ graph = StateGraph(TravelState)
 
 graph.add_node("flight_agent", flight_agent)
 graph.add_node("hotel_agent", hotel_agent)
+graph.add_node("weather_agent", weather_agent)
 graph.add_node("itinerary_agent", itinerary_agent)
 graph.add_node("final_agent", final_agent)
 
 graph.add_edge(START, "flight_agent")
 graph.add_edge("flight_agent", "hotel_agent")
-graph.add_edge("hotel_agent", "itinerary_agent")
+graph.add_edge("hotel_agent", "weather_agent")
+graph.add_edge("weather_agent", "itinerary_agent")
 graph.add_edge("itinerary_agent", "final_agent")
 graph.add_edge("final_agent", END)
 
@@ -247,6 +283,7 @@ if __name__ == "__main__":
             "flight_results": "",
             "hotel_results": "",
             "itinerary": "",
+            "weather_results": "",
             "llm_calls": 0,
         },
         config=config,
